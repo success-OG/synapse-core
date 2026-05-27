@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -16,6 +17,7 @@ pub mod telemetry;
 pub mod tenant;
 pub mod utils;
 pub mod validation;
+pub mod ws;
 
 pub use config::assets::AssetCache;
 
