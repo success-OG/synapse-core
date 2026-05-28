@@ -167,7 +167,7 @@ pub async fn process_batch(
         r#"
         SELECT id, stellar_account, amount, asset_code, status, created_at, updated_at,
                anchor_transaction_id, callback_type, callback_status, settlement_id,
-               memo, memo_type, metadata, priority
+               memo, memo_type, metadata, priority, trace_id
         FROM transactions
         WHERE status = 'pending'
         ORDER BY created_at ASC
@@ -190,6 +190,17 @@ pub async fn process_batch(
     let mut asset_codes = std::collections::HashSet::new();
     for transaction in &pending {
         asset_codes.insert(transaction.asset_code.clone());
+
+        // Create linked span for transaction processing if trace_id exists
+        if let Some(ref trace_id) = transaction.trace_id {
+            let span = tracing::info_span!(
+                "transaction.process",
+                transaction_id = %transaction.id,
+                trace_id = %trace_id,
+            );
+            let _guard = span.enter();
+            debug!("Processing transaction with trace context");
+        }
     }
 
     // TODO: per-transaction processing logic

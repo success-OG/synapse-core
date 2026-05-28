@@ -127,6 +127,22 @@ pub async fn transaction_callback(
     // Validate and sanitize all inputs before any DB interaction.
     let payload = validate_webhook_payload(payload)?;
 
+    // Extract trace context from current span
+    let trace_id = tracing::Span::current()
+        .extensions()
+        .get::<String>()
+        .cloned()
+        .or_else(|| {
+            opentelemetry::global::get_text_map_propagator(|propagator| {
+                let mut carrier = std::collections::HashMap::new();
+                propagator.inject_context(
+                    &opentelemetry::Context::current(),
+                    &mut carrier,
+                );
+                carrier.get("traceparent").cloned()
+            })
+        });
+
     let tx = Transaction::new(
         payload.stellar_address,
         payload.amount,
@@ -137,7 +153,8 @@ pub async fn transaction_callback(
         None, // memo
         None, // memo_type
         None, // metadata
-    );
+    )
+    .with_trace_id(trace_id);
 
     let inserted = queries::insert_transaction(&state.db, &tx).await?;
 
