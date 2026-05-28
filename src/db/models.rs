@@ -60,7 +60,7 @@ pub struct Transaction {
     pub memo: Option<String>,
     pub memo_type: Option<String>,
     pub metadata: Option<serde_json::Value>,
-    pub tenant_id: Option<Uuid>,
+    pub trace_id: Option<String>,
 }
 
 #[async_graphql::Object]
@@ -134,8 +134,13 @@ impl Transaction {
             memo,
             memo_type,
             metadata,
-            tenant_id: None,
+            trace_id: None,
         }
+    }
+
+    pub fn with_trace_id(mut self, trace_id: Option<String>) -> Self {
+        self.trace_id = trace_id;
+        self
     }
 }
 

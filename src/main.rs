@@ -10,7 +10,7 @@ use synapse_core::{
     middleware::idempotency::IdempotencyService,
     schemas,
     secrets::SecretsStore,
-    services::{FeatureFlagService, SettlementService, WebhookDispatcher},
+    services::{FeatureFlagService, ResourceLimiter, SettlementService, TaskLimits, WebhookDispatcher},
     stellar::HorizonClient,
     AppState, ReadinessState,
 };
@@ -140,6 +140,15 @@ async fn serve(config: config::Config) -> anyhow::Result<()> {
     migrator.run(&pool).await?;
     tracing::info!("Database migrations completed");
 
+    // Initialize resource limiters for background tasks
+    let processor_limiter = ResourceLimiter::new(
+        TaskLimits::new(config.processor_workers, 30),
+        "processor",
+    );
+    let settlement_limiter = ResourceLimiter::new(TaskLimits::new(1, 120), "settlement");
+    let webhook_limiter = ResourceLimiter::new(TaskLimits::new(10, 60), "webhook");
+    let partition_limiter = Arc::new(ResourceLimiter::new(TaskLimits::new(1, 300), "partition"));
+
     // Initialize partition manager (runs every 24 hours)
     let partition_manager = db::partition::PartitionManager::new(pool.clone(), 24, None);
     partition_manager.start();
@@ -163,6 +172,7 @@ async fn serve(config: config::Config) -> anyhow::Result<()> {
     let settlement_pool = pool.clone();
     let settlement_max_batch = config.settlement_max_batch_size;
     let settlement_min_tx = config.settlement_min_tx_count;
+    let settlement_limiter_clone = settlement_limiter.clone();
     tokio::spawn(async move {
         let service = SettlementService::with_config(
             settlement_pool,
@@ -173,13 +183,19 @@ async fn serve(config: config::Config) -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             tracing::info!("Running scheduled settlement job...");
-            match service.run_settlements().await {
-                Ok(results) => {
+            match settlement_limiter_clone
+                .run(async {
+                    service.run_settlements().await
+                })
+                .await
+            {
+                Ok(Ok(results)) => {
                     if !results.is_empty() {
                         tracing::info!("Successfully generated {} settlements", results.len());
                     }
                 }
-                Err(e) => tracing::error!("Scheduled settlement job failed: {:?}", e),
+                Ok(Err(e)) => tracing::error!("Scheduled settlement job failed: {:?}", e),
+                Err(e) => tracing::error!("Settlement task resource limit error: {}", e),
             }
         }
     });
@@ -187,14 +203,22 @@ async fn serve(config: config::Config) -> anyhow::Result<()> {
     // Start background webhook delivery worker (runs every 30 seconds)
     let webhook_pool = pool.clone();
     let redis_url = config.redis_url.clone();
+    let webhook_limiter_clone = webhook_limiter.clone();
     tokio::spawn(async move {
         let dispatcher = WebhookDispatcher::new(webhook_pool, &redis_url)
             .expect("failed to create webhook dispatcher");
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
-            if let Err(e) = dispatcher.process_pending().await {
-                tracing::error!("Webhook dispatcher error: {e}");
+            match webhook_limiter_clone
+                .run(async {
+                    dispatcher.process_pending().await
+                })
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::error!("Webhook dispatcher error: {e}"),
+                Err(e) => tracing::error!("Webhook task resource limit error: {}", e),
             }
         }
     });

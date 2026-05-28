@@ -1,5 +1,6 @@
 use crate::services::query_cache::QueryCache;
 use sqlx::PgPool;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 use tracing::{error, info};
@@ -28,7 +29,22 @@ impl PartitionManager {
 
             loop {
                 interval.tick().await;
-                if let Err(e) = self.maintain_partitions().await {
+                let result = if let Some(ref limiter) = self.limiter {
+                    limiter
+                        .run(async {
+                            self.maintain_partitions().await
+                        })
+                        .await
+                        .map_err(|e| sqlx::Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            e.to_string(),
+                        )))
+                        .and_then(|r| r)
+                } else {
+                    self.maintain_partitions().await
+                };
+
+                if let Err(e) = result {
                     error!("Partition maintenance failed: {}", e);
                 } else {
                     info!("Partition maintenance completed successfully");

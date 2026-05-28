@@ -304,13 +304,29 @@ impl WebhookDispatcher {
 
         let signature = sign_payload_with_version(&endpoint.secret, &timestamp, &body);
 
-        let response = self
+        // Get trace_id from transaction if available
+        let trace_id: Option<String> = sqlx::query_scalar(
+            "SELECT trace_id FROM transactions WHERE id = $1"
+        )
+        .bind(delivery.transaction_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+
+        let mut request = self
             .http
             .post(&endpoint.url)
             .header("Content-Type", "application/json")
             .header("X-Webhook-Signature", &signature)
             .header("X-Webhook-Timestamp", &timestamp)
-            .header("X-Webhook-Event", &delivery.event_type)
+            .header("X-Webhook-Event", &delivery.event_type);
+
+        if let Some(trace_id) = trace_id {
+            request = request.header("X-Trace-Id", trace_id);
+        }
+
+        let response = request
             .body(body)
             .send()
             .await;

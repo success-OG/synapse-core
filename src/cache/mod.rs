@@ -1,12 +1,5 @@
-/// Caching module for Redis-based storage with input validation
-pub mod validation;
+//! Caching module with rate limiting support.
 
-pub use validation::CacheValidator;
+pub mod rate_limiting;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_cache_module_loads() {
-        // Module loads successfully
-    }
-}
+pub use rate_limiting::RateLimiter;
