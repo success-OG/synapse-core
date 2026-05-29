@@ -1,4 +1,9 @@
-/// Connection pooling for WebSocket connections
+//! Connection pooling for WebSocket connections.
+//!
+//! During graceful shutdown the connection pool is the accounting source for
+//! active WebSocket streams. Handlers should acquire a `ConnectionPermit` only
+//! after admission checks pass, keep the permit for the lifetime of the socket,
+//! and rely on `Drop` to release it when the stream exits.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -68,7 +73,12 @@ impl ConnectionPool {
     }
 }
 
-/// Guard for a connection permit
+/// Guard for a connection permit.
+///
+/// Dropping the permit releases one active WebSocket slot. Shutdown paths
+/// should let the permit fall out of scope naturally after sending any final
+/// close frame; leaking or cloning permit ownership would make drain metrics
+/// inaccurate and could block future admissions.
 pub struct ConnectionPermit {
     active_connections: Arc<AtomicUsize>,
 }

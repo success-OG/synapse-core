@@ -1,4 +1,9 @@
-/// Health checks for WebSocket connections
+//! Health checks for WebSocket connections.
+//!
+//! Health state is complementary to graceful shutdown. A draining server can
+//! still mark an individual connection healthy while it sends final events and
+//! a close frame. Handlers should mark unhealthy connections promptly so stale
+//! sockets do not delay shutdown.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
