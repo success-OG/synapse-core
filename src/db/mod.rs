@@ -11,6 +11,59 @@ pub mod queries;
 pub mod session;
 pub mod slow_query;
 
+/// Maximum time to wait for in-flight queries to finish during graceful shutdown.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Gracefully shuts down a database pool.
+///
+/// Waits up to `SHUTDOWN_DRAIN_TIMEOUT` for active connections to finish, then
+/// closes the pool. This prevents data corruption from abruptly terminating
+/// in-flight transactions.
+///
+/// # Security
+/// - Refuses to close a pool that is already closed (no-op guard).
+/// - Logs a warning if the drain timeout is exceeded so operators are alerted
+///   to long-running queries that may need investigation.
+pub async fn graceful_shutdown(pool: &PgPool) {
+    // Guard: nothing to do if the pool is already closed.
+    if pool.is_closed() {
+        tracing::debug!("Database pool already closed; skipping graceful shutdown");
+        return;
+    }
+
+    let active = pool.size().saturating_sub(pool.num_idle() as u32);
+    tracing::info!(
+        active_connections = active,
+        timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
+        "Starting database graceful shutdown"
+    );
+
+    // Wait for active connections to drain, bounded by the timeout.
+    let drained = tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, async {
+        loop {
+            let in_flight = pool.size().saturating_sub(pool.num_idle() as u32);
+            if in_flight == 0 {
+                break;
+            }
+            tracing::debug!(in_flight, "Waiting for in-flight queries to complete");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    if drained.is_err() {
+        let remaining = pool.size().saturating_sub(pool.num_idle() as u32);
+        tracing::warn!(
+            remaining_connections = remaining,
+            timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
+            "Graceful shutdown timeout exceeded; forcing pool close"
+        );
+    }
+
+    pool.close().await;
+    tracing::info!("Database pool closed");
+}
+
 /// Build a pool and eagerly establish `min_connections` by running `SELECT 1`
 /// on each connection before returning. Logs warm-up completion time.
 pub async fn create_pool(config: &Config) -> Result<PgPool, sqlx::Error> {
