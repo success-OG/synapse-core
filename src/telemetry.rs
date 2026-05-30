@@ -71,3 +71,40 @@ pub fn shutdown_tracer(provider: TracerProvider) {
     }
     drop(provider);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::global;
+
+    #[test]
+    fn test_init_tracer_sets_global_provider_and_resource() {
+        let provider = init_tracer("test-service", None).expect("failed to init tracer");
+        let tracer = global::tracer("test-tracer");
+        let span = tracer.start("test-span");
+        span.end();
+
+        let resource = provider.config().resource();
+        let mut service_name = None;
+        let mut service_version = None;
+
+        for attr in resource.iter() {
+            match attr.key.as_str() {
+                "service.name" => service_name = Some(attr.value.to_string()),
+                "service.version" => service_version = Some(attr.value.to_string()),
+                _ => {}
+            }
+        }
+
+        assert_eq!(service_name.as_deref(), Some("test-service"));
+        assert!(service_version.is_some());
+
+        shutdown_tracer(provider);
+    }
+
+    #[test]
+    fn test_shutdown_tracer_drops_provider_without_error() {
+        let provider = init_tracer("test-service", None).expect("failed to init tracer");
+        shutdown_tracer(provider);
+    }
+}
